@@ -489,8 +489,9 @@ def _patch_existing_locks(threading):
                 if o._owner is not None:
                     o._owner = tid
             else:
-                if o._RLock__owner is not None:
-                    o._RLock__owner = tid
+                if hasattr(o, '_RLock__owner'):
+                    if o._RLock__owner is not None:
+                        o._RLock__owner = tid
         elif isinstance(o, _ModuleLock):
             if o.owner is not None:
                 o.owner = tid
