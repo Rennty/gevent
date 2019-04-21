@@ -20,6 +20,7 @@ from _setuputils import PYPY, WIN
 from _setuputils import IGNORE_CFFI
 from _setuputils import SKIP_LIBUV
 from _setuputils import ConfiguringBuildExt
+from _setuputils import GeventClean
 from _setuputils import BuildFailed
 from _setuputils import cythonize1
 
@@ -187,6 +188,7 @@ if not WIN:
     # Python API functions, and you're not supposed to do that from
     # CFFI code. Plus I could never get the libraries= line to ffi.compile()
     # correct to make linking work.
+    # Also, we use the type `nlink_t`, which is not defined on Windows.
     cffi_modules.append(
         LIBEV_CFFI_MODULE
     )
@@ -214,7 +216,7 @@ greenlet_requires = [
 # to be the default, and that requires cffi; but don't try to install it
 # on PyPy or it messes up the build
 cffi_requires = [
-    "cffi >= 1.11.5 ; sys_platform == 'win32' and platform_python_implementation == 'CPython'",
+    "cffi >= 1.12.2 ; sys_platform == 'win32' and platform_python_implementation == 'CPython'",
 ]
 
 
@@ -324,6 +326,17 @@ def run_setup(ext_modules, run_make):
             # TODO: Generalize this.
             if LIBEV_CFFI_MODULE in cffi_modules and not WIN:
                 system(libev_configure_command)
+                # This changed to the libev directory, and ran configure .
+                # It then copied the generated config.h back to the previous
+                # directory, which happened to be beside us. In the embedded case,
+                # we're building in a different directory, so it copied it back to build
+                # directory, but here, we're building in the embedded directory, so
+                # it gave us useless files.
+                bad_file = None
+                for bad_file in ('config.h', 'configure-output.txt'):
+                    if os.path.exists(bad_file):
+                        os.remove(bad_file)
+                del bad_file
 
     setup(
         name='gevent',
@@ -346,12 +359,15 @@ def run_setup(ext_modules, run_make):
         packages=find_packages('src'),
         include_package_data=True,
         ext_modules=ext_modules,
-        cmdclass=dict(build_ext=ConfiguringBuildExt),
+        cmdclass={
+            'build_ext': ConfiguringBuildExt,
+            'clean': GeventClean,
+        },
         install_requires=install_requires,
         setup_requires=setup_requires,
         extras_require={
             'dnspython': [
-                'dnspython',
+                'dnspython >= 1.16.0',
                 'idna',
             ],
             'events': [
@@ -362,19 +378,23 @@ def run_setup(ext_modules, run_make):
                 'repoze.sphinx.autointerface',
             ],
             'test': [
+                # To the extent possible, we should work to make sure
+                # our tests run, at least a basic set, without any of
+                # these extra dependencies (i.e., skip things when they are
+                # missing). This helps serve as a smoketest for users.
                 'zope.interface',
                 'zope.event',
 
                 # Makes tests faster
                 # Fails to build on PyPy on Windows.
-                'psutil ; platform_python_implementation == "CPython" or sys_platform != "win32"',
+                'psutil >= 5.6.1 ; platform_python_implementation == "CPython" or sys_platform != "win32"',
                 # examples, called from tests, use this
                 'requests',
 
                 # We don't run coverage on Windows, and pypy can't build it there
                 # anyway (coveralls -> cryptopgraphy -> openssl)
-                'coverage>=5.0a3 ; sys_platform != "win32"',
-                'coveralls>=1.0 ; sys_platform != "win32"',
+                'coverage>=5.0a4 ; sys_platform != "win32"',
+                'coveralls>=1.7.0 ; sys_platform != "win32"',
 
                 'futures ; python_version == "2.7"',
                 'mock ; python_version == "2.7"',
@@ -405,9 +425,7 @@ def run_setup(ext_modules, run_make):
             "Intended Audience :: Developers",
             "Development Status :: 4 - Beta"
         ],
-        # 3.4.0 -- 3.4.2 do not have socket.SocketKind, even though it
-        # is documented. See https://github.com/gevent/gevent/pull/1311#issuecomment-452691569
-        python_requires=">=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.0,!=3.4.1,!=3.4.2",
+        python_requires=">=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*",
         entry_points={
             'gevent.plugins.monkey.will_patch_all': [
                 "signal_os_incompat = gevent.monkey:_subscribe_signal_os",

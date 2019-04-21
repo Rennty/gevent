@@ -23,7 +23,6 @@ from .sysinfo import PYPY
 from .sysinfo import PYPY3
 from .sysinfo import PY3
 from .sysinfo import PY2
-from .sysinfo import PY34
 from .sysinfo import PY35
 from .sysinfo import PY36
 from .sysinfo import PY37
@@ -114,6 +113,11 @@ def get_switch_expected(fullname):
 disabled_tests = [
     # The server side takes awhile to shut down
     'test_httplib.HTTPSTest.test_local_bad_hostname',
+    # These were previously 3.5+ issues (same as above)
+    # but have been backported.
+    'test_httplib.HTTPSTest.test_local_good_hostname',
+    'test_httplib.HTTPSTest.test_local_unknown_cert',
+
 
     'test_threading.ThreadTests.test_PyThreadState_SetAsyncExc',
     # uses some internal C API of threads not available when threads are emulated with greenlets
@@ -184,6 +188,10 @@ disabled_tests = [
     # since November of 2016 on Python 3, but now also seen on Python 2/Pypy.
     'test_subprocess.ProcessTestCase.test_leaking_fds_on_error',
 
+    # Added between 3.6.0 and 3.6.3, uses _testcapi and internals
+    # of the subprocess module. Backported to Python 2.7.16.
+    'test_subprocess.POSIXProcessTestCase.test_stopped',
+
     'test_ssl.ThreadedTests.test_default_ciphers',
     'test_ssl.ThreadedTests.test_empty_cert',
     'test_ssl.ThreadedTests.test_malformed_cert',
@@ -221,6 +229,27 @@ if 'thread' in os.getenv('GEVENT_FILE', ''):
         # Fails with "OSError: 9 invalid file descriptor"; expect GC/lifetime issues
     ]
 
+if PY2 and PYPY:
+    disabled_tests += [
+        # These appear to hang or take a long time for some reason?
+        # Likely a hostname/binding issue or failure to properly close/gc sockets.
+        'test_httpservers.BaseHTTPServerTestCase.test_head_via_send_error',
+        'test_httpservers.BaseHTTPServerTestCase.test_head_keep_alive',
+        'test_httpservers.BaseHTTPServerTestCase.test_send_blank',
+        'test_httpservers.BaseHTTPServerTestCase.test_send_error',
+        'test_httpservers.BaseHTTPServerTestCase.test_command',
+        'test_httpservers.BaseHTTPServerTestCase.test_handler',
+        'test_httpservers.CGIHTTPServerTestcase.test_post',
+        'test_httpservers.CGIHTTPServerTestCase.test_query_with_continuous_slashes',
+        'test_httpservers.CGIHTTPServerTestCase.test_query_with_multiple_question_mark',
+        'test_httpservers.CGIHTTPServerTestCase.test_os_environ_is_not_altered',
+
+        # This one sometimes results on connection refused
+        'test_urllib2_localnet.TestUrlopen.test_info',
+        # Sometimes hangs
+        'test_ssl.ThreadedTests.test_socketserver',
+
+    ]
 
 if LIBUV:
     # epoll appears to work with these just fine in some cases;
@@ -410,6 +439,9 @@ if LIBUV:
             'test_smtplib.TooLongLineTests.testLineTooLong',
             'test_smtplib.GeneralTests.testTimeoutValue',
 
+            # This sometimes crashes, which can't be our fault?
+            'test_ssl.BasicSocketTests.test_parse_cert_CVE_2019_5010',
+
         ]
 
         if PYPY:
@@ -462,13 +494,17 @@ if LIBUV:
             'test_ssl.ThreadedTests.test_handshake_timeout',
 
             # These sometimes raise LoopExit, for no apparent reason,
-            # mostly but not exclusively on Python 2.
+            # mostly but not exclusively on Python 2. Sometimes (often?)
+            # this happens in the setUp() method when we attempt to get a client
+            # connection
             'test_socket.BufferIOTest.testRecvFromIntoBytearray',
             'test_socket.BufferIOTest.testRecvFromIntoArray',
             'test_socket.BufferIOTest.testRecvIntoArray',
+            'test_socket.BufferIOTest.testRecvIntoMemoryview',
             'test_socket.BufferIOTest.testRecvFromIntoEmptyBuffer',
             'test_socket.BufferIOTest.testRecvFromIntoMemoryview',
             'test_socket.BufferIOTest.testRecvFromIntoSmallBuffer',
+            'test_socket.BufferIOTest.testRecvIntoBytearray',
         ]
 
         if PY3:
@@ -519,6 +555,27 @@ if PY2:
             # The list of values and systems is long and complex, so
             # presumably something needs to be updated. Only on PyPy.
             'test_ssl.ThreadedTests.test_alpn_protocols',
+        ]
+
+    disabled_tests += [
+        # At least on OSX, this results in connection refused
+        'test_urllib2_localnet.TestUrlopen.test_https_sni',
+    ]
+
+    if sys.version_info[:3] < (2, 7, 16):
+        # We have 2.7.16 tests; older versions can fail
+        # to validate some SSL things or are missing important support functions
+        disabled_tests += [
+            # Support functions
+            'test_thread.ThreadRunningTests.test_nt_and_posix_stack_size',
+            'test_thread.ThreadRunningTests.test_save_exception_state_on_error',
+            'test_thread.ThreadRunningTests.test_starting_threads',
+            'test_thread.BarrierTest.test_barrier',
+            # Broken SSL
+            'test_urllib2_localnet.TestUrlopen.test_https',
+            'test_ssl.ContextTests.test__create_stdlib_context',
+            'test_ssl.ContextTests.test_create_default_context',
+            'test_ssl.ContextTests.test_options',
         ]
 
 def _make_run_with_original(mod_name, func_name):
@@ -611,7 +668,41 @@ if PYPY:
         # On some platforms, this returns "zlib_compression", but the test is looking for
         # "ZLIB"
         'test_ssl.ThreadedTests.test_compression',
+
+        # These are flaxy, apparently a race condition? Began with PyPy 2.7-7 and 3.6-7
+        'test_asyncore.TestAPI_UsePoll.test_handle_error',
+        'test_asyncore.TestAPI_UsePoll.test_handle_read',
+
+
     ]
+
+    if PY36:
+        disabled_tests += [
+            # These are flaky, begining in 3.6-alpha 7.0, not finding some flag
+            # set, apparently a race condition
+            'test_asyncore.TestAPI_UveIPv6Poll.test_handle_accept',
+            'test_asyncore.TestAPI_UveIPv6Poll.test_handle_accepted',
+            'test_asyncore.TestAPI_UveIPv6Poll.test_handle_close',
+            'test_asyncore.TestAPI_UveIPv6Poll.test_handle_write',
+
+            'test_asyncore.TestAPI_UseIPV6Select.test_handle_read',
+
+            # These are reporting 'ssl has no attribute ...'
+            # This could just be an OSX thing
+            'test_ssl.ContextTests.test__create_stdlib_context',
+            'test_ssl.ContextTests.test_create_default_context',
+            'test_ssl.ContextTests.test_get_ciphers',
+            'test_ssl.ContextTests.test_options',
+            'test_ssl.ContextTests.test_constants',
+
+            # These tend to hang for some reason, probably not properly
+            # closed sockets.
+            'test_socketserver.SocketServerTest.test_write',
+
+            # This uses ctypes to do funky things including using ptrace,
+            # it hangs
+            'test_subprocess.ProcessTestcase.test_child_terminated_in_stopped_state',
+        ]
 
 # Generic Python 3
 
@@ -806,19 +897,41 @@ if PYPY:
         # This is an important test, so rather than skip it in patched_tests_setup,
         # we do the gc before we return.
         'test_urllib2_localnet.TestUrlopen.test_https_with_cafile': _gc_at_end,
+
+        'test_httpservers.BaseHTTPServerTestCase.test_command': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_handler': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_head_keep_alive': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_head_via_send_error': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_header_close': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_internal_key_error': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_request_line_trimming': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_return_custom_status': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_return_header_keep_alive': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_send_blank': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_send_error': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_version_bogus': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_version_digits': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_version_invalid': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_version_none': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_version_none_get': _gc_at_end,
+        'test_httpservers.BaseHTTPServerTestCase.test_get': _gc_at_end,
+        'test_httpservers.SimpleHTTPServerTestCase.test_get': _gc_at_end,
+        'test_httpservers.SimpleHTTPServerTestCase.test_head': _gc_at_end,
+        'test_httpservers.SimpleHTTPServerTestCase.test_invalid_requests': _gc_at_end,
+        'test_httpservers.SimpleHTTPServerTestCase.test_path_without_leading_slash': _gc_at_end,
+        'test_httpservers.CGIHTTPServerTestCase.test_invaliduri': _gc_at_end,
+        'test_httpservers.CGIHTTPServerTestCase.test_issue19435': _gc_at_end,
+
+        'test_httplib.TunnelTests.test_connect': _gc_at_end,
+        'test_httplib.SourceAddressTest.testHTTPConnectionSourceAddress': _gc_at_end,
+
+        # Unclear
+        'test_urllib2_localnet.ProxyAuthTests.test_proxy_with_bad_password_raises_httperror': _gc_at_end,
+        'test_urllib2_localnet.ProxyAuthTests.test_proxy_with_no_password_raises_httperror': _gc_at_end,
     })
 
 
-if PY34 and sys.version_info[:3] < (3, 4, 4):
-    # Older versions have some issues with the SSL tests. Seen on Appveyor
-    disabled_tests += [
-        'test_ssl.ContextTests.test_options',
-        'test_ssl.ThreadedTests.test_protocol_sslv23',
-        'test_ssl.ThreadedTests.test_protocol_sslv3',
-        'test_httplib.HTTPSTest.test_networked',
-    ]
-
-if PY34:
+if PY35:
     disabled_tests += [
         'test_subprocess.ProcessTestCase.test_threadsafe_wait',
         # XXX: It seems that threading.Timer is not being greened properly, possibly
@@ -854,10 +967,6 @@ if PY34:
         # it should be found at runtime.
         'test_socket.GeneralModuleTests.test_sock_ioctl',
 
-        # See comments for 2.7; these hang
-        'test_httplib.HTTPSTest.test_local_good_hostname',
-        'test_httplib.HTTPSTest.test_local_unknown_cert',
-
         # XXX This fails for an unknown reason
         'test_httplib.HeaderTests.test_parse_all_octets',
     ]
@@ -867,28 +976,6 @@ if PY34:
             # These raise "OSError: 12 Cannot allocate memory" on both
             # patched and unpatched runs
             'test_socket.RecvmsgSCMRightsStreamTest.testFDPassEmpty',
-        ]
-
-    if sys.version_info[:2] == (3, 4):
-        disabled_tests += [
-            # These are all expecting that a signal (sigalarm) that
-            # arrives during a blocking call should raise
-            # InterruptedError with errno=EINTR. gevent does not do
-            # this, instead its loop keeps going and raises a timeout
-            # (which fails the test). HOWEVER: Python 3.5 fixed this
-            # problem and started raising a timeout,
-            # (https://docs.python.org/3/whatsnew/3.5.html#pep-475-retry-system-calls-failing-with-eintr)
-            # and removed these tests (InterruptedError is no longer
-            # raised). So basically, gevent was ahead of its time.
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedRecvIntoTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedRecvTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedRecvfromIntoTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedRecvfromTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedSendTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedSendtoTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedRecvmsgTimeout',
-            'test_socket.InterruptedRecvTimeoutTest.testInterruptedRecvmsgIntoTimeout',
-            'test_socket.InterruptedSendTimeoutTest.testInterruptedSendmsgTimeout',
         ]
 
         if TRAVIS:
@@ -923,9 +1010,6 @@ if PY35:
         # 'lock_tests.LockTests.lest_locked_repr',
         # 'lock_tests.LockTests.lest_repr',
 
-        # Added between 3.6.0 and 3.6.3, uses _testcapi and internals
-        # of the subprocess module.
-        'test_subprocess.POSIXProcessTestCase.test_stopped',
 
         # This test opens a socket, creates a new socket with the same fileno,
         # closes the original socket (and hence fileno) and then
@@ -1023,6 +1107,11 @@ if PY37:
         # but it passes when they run it and fails when we do. It's not
         # clear why.
         'test_ssl.ThreadedTests.test_check_hostname_idn',
+
+        # These appear to hang, haven't investigated why
+        'test_ssl.SimpleBackgroundTests.test_get_server_certificate',
+        # Probably the same as NetworkConnectionNoServer.test_create_connection_timeout
+        'test_socket.NetworkConnectionNoServer.test_create_connection',
     ]
 
     if APPVEYOR:

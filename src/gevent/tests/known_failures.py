@@ -21,10 +21,6 @@ from gevent.testing.sysinfo import LIBUV
 IGNORED_TESTS = []
 
 FAILING_TESTS = [
-
-    # Sometimes fails with AssertionError: ...\nIOError: close() called during concurrent operation on the same file object.\n'
-    # Sometimes it contains "\nUnhandled exception in thread started by \nsys.excepthook is missing\nlost sys.stderr\n"
-    "FLAKY test__subprocess_interrupted.py",
     # test__issue6 (see comments in test file) is really flaky on both Travis and Appveyor;
     # on Travis we could just run the test again (but that gets old fast), but on appveyor
     # we don't have that option without a new commit---and sometimes we really need a build
@@ -233,16 +229,21 @@ if PYPY:
         'FLAKY test__backdoor.py',
     ]
 
+
     if RESOLVER_NOT_SYSTEM:
 
         FAILING_TESTS += [
             # A few errors and differences:
+            # AssertionError: ('255.255.255.255', 'http') != gaierror(-2,) # DNS Python
             # AssertionError: ('255.255.255.255', 'http') != gaierror(4, 'ARES_ENOTFOUND: Domain name not found')
             # AssertionError: OverflowError('port must be 0-65535.',) != ('readthedocs.org', '65535')
             # AssertionError: Lists differ:
             #     (10, 1, 6, '', ('2607:f8b0:4004:810::200e', 80, 0L, 0L))
             #     (10, 1, 6, '', ('2607:f8b0:4004:805::200e', 80, 0, 0))
-            'test__socket_dns.py',
+            #
+            # Somehow it seems most of these are fixed with PyPy3.6-7 under dnspython,
+            # (once we commented out TestHostname)?
+            'FLAKY test__socket_dns.py',
         ]
 
     if LIBUV:
@@ -259,6 +260,15 @@ if PYPY:
             # This fails to get the correct results, sometimes. I can't reproduce locally
             'FLAKY test__example_udp_server.py',
             'FLAKY test__example_udp_client.py',
+        ]
+
+        IGNORED_TESTS += [
+            # PyPy 7.0 and 7.1 on Travis with Ubunto Xenial 16.04
+            # can't allocate SSL Context objects, either in Python 2.7
+            # or 3.6. There must be some library incompatibility.
+            # No point even running them.
+            # XXX: Remember to turn this back on.
+            'test_ssl.py',
         ]
 
         if LIBUV:
@@ -290,8 +300,6 @@ if PYPY:
 
             ## Unknown; can't reproduce locally on OS X
             'FLAKY test_subprocess.py', # timeouts on one test.
-
-            'FLAKY test_ssl.py',
         ]
 
 
@@ -308,7 +316,7 @@ if PY3:
 
 
 
-if sys.version_info[:2] >= (3, 4) and APPVEYOR:
+if PY3 and APPVEYOR:
     FAILING_TESTS += [
         # Timing issues on appveyor
         'FLAKY test_selectors.py'

@@ -40,14 +40,7 @@ __dns__ = _socketcommon.__dns__
 
 SocketIO = __socket__.SocketIO # pylint:disable=no-member
 
-
-def _get_memory(data):
-    mv = memoryview(data)
-    if mv.shape:
-        return mv
-    # No shape, probably working with a ctypes object,
-    # or something else exotic that supports the buffer interface
-    return mv.tobytes()
+from gevent._greenlet_primitives import get_memory as _get_memory
 
 timeout_default = object()
 
@@ -607,45 +600,26 @@ class socket(object):
         """
         return self._sendfile_use_send(file, offset, count)
 
-    # get/set_inheritable new in 3.4
-    if hasattr(os, 'get_inheritable') or hasattr(os, 'get_handle_inheritable'):
-        # pylint:disable=no-member
-        if os.name == 'nt':
-            def get_inheritable(self):
-                return os.get_handle_inheritable(self.fileno())
 
-            def set_inheritable(self, inheritable):
-                os.set_handle_inheritable(self.fileno(), inheritable)
-        else:
-            def get_inheritable(self):
-                return os.get_inheritable(self.fileno())
+    if os.name == 'nt':
+        def get_inheritable(self):
+            return os.get_handle_inheritable(self.fileno())
 
-            def set_inheritable(self, inheritable):
-                os.set_inheritable(self.fileno(), inheritable)
-        _added = "\n\n.. versionadded:: 1.1rc4 Added in Python 3.4"
-        get_inheritable.__doc__ = "Get the inheritable flag of the socket" + _added
-        set_inheritable.__doc__ = "Set the inheritable flag of the socket" + _added
-        del _added
+        def set_inheritable(self, inheritable):
+            os.set_handle_inheritable(self.fileno(), inheritable)
+    else:
+        def get_inheritable(self):
+            return os.get_inheritable(self.fileno())
+
+        def set_inheritable(self, inheritable):
+            os.set_inheritable(self.fileno(), inheritable)
+
+    get_inheritable.__doc__ = "Get the inheritable flag of the socket"
+    set_inheritable.__doc__ = "Set the inheritable flag of the socket"
 
 
-if sys.version_info[:2] == (3, 4) and sys.version_info[:3] <= (3, 4, 2):
-    # Python 3.4, up to and including 3.4.2, had a bug where the
-    # SocketType enumeration overwrote the SocketType class imported
-    # from _socket. This was fixed in 3.4.3 (http://bugs.python.org/issue20386
-    # and https://github.com/python/cpython/commit/0d2f85f38a9691efdfd1e7285c4262cab7f17db7).
-    # Prior to that, if we replace SocketType with our own class, the implementation
-    # of socket.type breaks with "OSError: [Errno 97] Address family not supported by protocol".
-    # Therefore, on these old versions, we must preserve it as an enum; while this
-    # seems like it could lead to non-green behaviour, code on those versions
-    # cannot possibly be using SocketType as a class anyway.
-    SocketType = __socket__.SocketType # pylint:disable=no-member
-    # Fixup __all__; note that we get exec'd multiple times during unit tests
-    if 'SocketType' in __implements__:
-        __implements__.remove('SocketType')
-    if 'SocketType' not in __imports__:
-        __imports__.append('SocketType')
-else:
-    SocketType = socket
+
+SocketType = socket
 
 
 def fromfd(fd, family, type, proto=0):
@@ -668,6 +642,7 @@ if hasattr(_socket.socket, "share"):
         return socket(0, 0, 0, info)
 
     __implements__.append('fromshare')
+
 
 if hasattr(_socket, "socketpair"):
 
@@ -696,9 +671,8 @@ if hasattr(_socket, "socketpair"):
 else: # pragma: no cover
     # Origin: https://gist.github.com/4325783, by Geert Jansen.  Public domain.
 
-    # gevent: taken from 3.6 release. Expected to be used only on Win. Added to Win/3.5
-    # gevent: for < 3.5, pass the default value of 128 to lsock.listen()
-    # (3.5+ uses this as a default and the original code passed no value)
+    # gevent: taken from 3.6 release, confirmed unchanged in 3.7 and
+    # 3.8a1. Expected to be used only on Win. Added to Win/3.5
 
     _LOCALHOST = '127.0.0.1'
     _LOCALHOST_V6 = '::1'
@@ -721,7 +695,7 @@ else: # pragma: no cover
         lsock = socket(family, type, proto)
         try:
             lsock.bind((host, 0))
-            lsock.listen(128)
+            lsock.listen()
             # On IPv6, ignore flow_info and scope_id
             addr, port = lsock.getsockname()[:2]
             csock = socket(family, type, proto)
@@ -739,14 +713,6 @@ else: # pragma: no cover
         finally:
             lsock.close()
         return (ssock, csock)
-
-    if sys.version_info[:2] < (3, 5):
-        # Not provided natively
-        if 'socketpair' in __implements__:
-            # Multiple imports can cause this to be missing if _socketcommon
-            # was successfully imported, leading to subsequent imports to cause
-            # ValueError
-            __implements__.remove('socketpair')
 
 
 if hasattr(__socket__, 'close'): # Python 3.7b1+

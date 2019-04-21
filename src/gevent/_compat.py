@@ -5,12 +5,19 @@ internal gevent python 2/python 3 bridges. Not for external use.
 
 from __future__ import print_function, absolute_import, division
 
+## Important: This module should generally not have any other gevent
+## imports (the exception is _util_py2)
+
 import sys
 import os
 
 
 PY2 = sys.version_info[0] == 2
 PY3 = sys.version_info[0] >= 3
+PY35 = sys.version_info[:2] >= (3, 5)
+PY36 = sys.version_info[:2] >= (3, 6)
+PY37 = sys.version_info[:2] >= (3, 7)
+PY38 = sys.version_info[:2] >= (3, 8)
 PYPY = hasattr(sys, 'pypy_version_info')
 WIN = sys.platform.startswith("win")
 LINUX = sys.platform.startswith('linux')
@@ -158,3 +165,22 @@ except ImportError:
         perf_counter = time.clock
     else:
         perf_counter = time.time
+
+
+## Monitoring
+def get_this_psutil_process():
+    # Depends on psutil. Defer the import until needed, who knows what
+    # it imports (psutil imports subprocess which on Python 3 imports
+    # selectors. This can expose issues with monkey-patching.)
+    # Returns a freshly queried object each time.
+    try:
+        from psutil import Process, AccessDenied
+        # Make sure it works (why would we be denied access to our own process?)
+        try:
+            proc = Process()
+            proc.memory_full_info()
+        except AccessDenied: # pragma: no cover
+            proc = None
+    except ImportError:
+        proc = None
+    return proc

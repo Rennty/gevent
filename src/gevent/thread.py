@@ -11,34 +11,52 @@ Implementation of the standard :mod:`thread` module that spawns greenlets.
 from __future__ import absolute_import
 import sys
 
-__implements__ = ['allocate_lock',
-                  'get_ident',
-                  'exit',
-                  'LockType',
-                  'stack_size',
-                  'start_new_thread',
-                  '_local']
+__implements__ = [
+    'allocate_lock',
+    'get_ident',
+    'exit',
+    'LockType',
+    'stack_size',
+    'start_new_thread',
+    '_local',
+]
 
 __imports__ = ['error']
-if sys.version_info[0] <= 2:
+if sys.version_info[0] == 2:
     import thread as __thread__ # pylint:disable=import-error
+    PY2 = True
+    PY3 = False
+    # Name the `future` backport that might already have been imported;
+    # Importing `pkg_resources` imports this, for example.
+    __alternate_targets__ = ('_thread',)
 else:
     import _thread as __thread__ # pylint:disable=import-error
+    PY2 = False
+    PY3 = True
     __target__ = '_thread'
-    __imports__ += ['RLock',
-                    'TIMEOUT_MAX',
-                    'allocate',
-                    'exit_thread',
-                    'interrupt_main',
-                    'start_new']
+    __imports__ += [
+        'TIMEOUT_MAX',
+        'allocate',
+        'exit_thread',
+        'interrupt_main',
+        'start_new'
+    ]
+
+
 error = __thread__.error
-from gevent._compat import PY3
+
 from gevent._compat import PYPY
 from gevent._util import copy_globals
 from gevent.hub import getcurrent, GreenletExit
 from gevent.greenlet import Greenlet
 from gevent.lock import BoundedSemaphore
 from gevent.local import local as _local
+
+if hasattr(__thread__, 'RLock'):
+    assert PY3 or PYPY
+    # Added in Python 3.4, backported to PyPy 2.7-7.0
+    __imports__.append("RLock")
+
 
 
 def get_ident(gr=None):
@@ -109,6 +127,7 @@ __imports__ = copy_globals(__thread__, globals(),
 
 __all__ = __implements__ + __imports__
 __all__.remove('_local')
+
 
 # XXX interrupt_main
 # XXX _count()

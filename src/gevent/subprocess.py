@@ -44,6 +44,9 @@ from gevent.hub import sleep
 from gevent.hub import getcurrent
 from gevent._compat import integer_types, string_types, xrange
 from gevent._compat import PY3
+from gevent._compat import PY35
+from gevent._compat import PY36
+from gevent._compat import PY37
 from gevent._compat import reraise
 from gevent._compat import fspath
 from gevent._compat import fsencode
@@ -118,7 +121,7 @@ __extra__ = [
     'CompletedProcess',
 ]
 
-if sys.version_info[:2] >= (3, 3):
+if PY3:
     __imports__ += [
         'DEVNULL',
         'getstatusoutput',
@@ -130,7 +133,7 @@ else:
     __extra__.append("TimeoutExpired")
 
 
-if sys.version_info[:2] >= (3, 5):
+if PY35:
     __extra__.remove('run')
     __extra__.remove('CompletedProcess')
     __implements__.append('run')
@@ -144,12 +147,12 @@ if sys.version_info[:2] >= (3, 5):
     except:
         MAXFD = 256
 
-if sys.version_info[:2] >= (3, 6):
+if PY36:
     # This was added to __all__ for windows in 3.6
     __extra__.remove('STARTUPINFO')
     __imports__.append('STARTUPINFO')
 
-if sys.version_info[:2] >= (3, 7):
+if PY37:
     __imports__.extend([
         'ABOVE_NORMAL_PRIORITY_CLASS', 'BELOW_NORMAL_PRIORITY_CLASS',
         'HIGH_PRIORITY_CLASS', 'IDLE_PRIORITY_CLASS',
@@ -479,7 +482,7 @@ class Popen(object):
             if preexec_fn is not None:
                 raise ValueError("preexec_fn is not supported on Windows "
                                  "platforms")
-            if sys.version_info[:2] >= (3, 7):
+            if PY37:
                 if close_fds is _PLATFORM_DEFAULT_CLOSE_FDS:
                     close_fds = True
             else:
@@ -958,6 +961,10 @@ class Popen(object):
             # Process startup details
             if startupinfo is None:
                 startupinfo = STARTUPINFO()
+            elif hasattr(startupinfo, '_copy'):
+                # bpo-34044: Copy STARTUPINFO since it is modified below,
+                # so the caller can reuse it multiple times.
+                startupinfo = startupinfo._copy()
             use_std_handles = -1 not in (p2cread, c2pwrite, errwrite)
             if use_std_handles:
                 startupinfo.dwFlags |= STARTF_USESTDHANDLES
@@ -1372,8 +1379,10 @@ class Popen(object):
                             # is possible that it is overwritten (#12607).
                             if c2pwrite == 0:
                                 c2pwrite = os.dup(c2pwrite)
+                                _set_inheritable(c2pwrite, False)
                             while errwrite in (0, 1):
                                 errwrite = os.dup(errwrite)
+                                _set_inheritable(errwrite, False)
 
                             # Dup fds for child
                             def _dup2(existing, desired):
@@ -1397,11 +1406,18 @@ class Popen(object):
 
                             # Close pipe fds.  Make sure we don't close the
                             # same fd more than once, or standard fds.
-                            closed = set([None])
-                            for fd in [p2cread, c2pwrite, errwrite]:
-                                if fd not in closed and fd > 2:
-                                    os.close(fd)
-                                    closed.add(fd)
+                            if not PY3:
+                                closed = set([None])
+                                for fd in [p2cread, c2pwrite, errwrite]:
+                                    if fd not in closed and fd > 2:
+                                        os.close(fd)
+                                        closed.add(fd)
+
+                            # Python 3 (with a working set_inheritable):
+                            # We no longer manually close p2cread,
+	                        # c2pwrite, and errwrite here as
+	                        # _close_open_fds takes care when it is
+	                        # not already non-inheritable.
 
                             if cwd is not None:
                                 try:
@@ -1487,10 +1503,20 @@ class Popen(object):
                 errpipe_read = FileObject(errpipe_read, 'rb')
                 data = errpipe_read.read()
             finally:
-                if hasattr(errpipe_read, 'close'):
-                    errpipe_read.close()
-                else:
-                    os.close(errpipe_read)
+                try:
+                    if hasattr(errpipe_read, 'close'):
+                        errpipe_read.close()
+                    else:
+                        os.close(errpipe_read)
+                except OSError:
+                    # Especially on PyPy, we sometimes see the above
+                    # `os.close(errpipe_read)` raise an OSError.
+                    # It's not entirely clear why, but it happens in
+                    # InterprocessSignalTests.test_main sometimes, which must mean
+                    # we have some sort of race condition.
+                    pass
+                finally:
+                    errpipe_read = -1
 
             if data != b"":
                 self.wait()
@@ -1504,11 +1530,19 @@ class Popen(object):
                         child_exception.filename = cwd
                 raise child_exception
 
-        def _handle_exitstatus(self, sts):
-            if os.WIFSIGNALED(sts):
-                self.returncode = -os.WTERMSIG(sts)
-            elif os.WIFEXITED(sts):
-                self.returncode = os.WEXITSTATUS(sts)
+        def _handle_exitstatus(self, sts, _WIFSIGNALED=os.WIFSIGNALED,
+                               _WTERMSIG=os.WTERMSIG, _WIFEXITED=os.WIFEXITED,
+                               _WEXITSTATUS=os.WEXITSTATUS, _WIFSTOPPED=os.WIFSTOPPED,
+                               _WSTOPSIG=os.WSTOPSIG):
+            # This method is called (indirectly) by __del__, so it cannot
+            # refer to anything outside of its local scope.
+            # (gevent: We don't have a __del__, that's in the CPython implementation.)
+            if _WIFSIGNALED(sts):
+                self.returncode = -_WTERMSIG(sts)
+            elif _WIFEXITED(sts):
+                self.returncode = _WEXITSTATUS(sts)
+            elif _WIFSTOPPED(sts):
+                self.returncode = -_WSTOPSIG(sts)
             else:
                 # Should never happen
                 raise RuntimeError("Unknown child exit status!")

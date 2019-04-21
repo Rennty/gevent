@@ -24,6 +24,10 @@ def _find_files_to_ignore():
             'psycopg2_pool.py',
             'geventsendfile.py',
         ]
+        if greentest.PYPY and greentest.RUNNING_ON_APPVEYOR:
+            # For some reason on Windows with PyPy, this times out,
+            # when it should be very fast.
+            result.append("processes.py")
         result += [x[14:] for x in glob.glob('test__example_*.py')]
 
     finally:
@@ -44,13 +48,13 @@ class _AbstractTestMixin(util.ExampleMixin):
     def test_runs(self):
         start = time.time()
         min_time, max_time = self.time_range
-        if util.run([sys.executable, '-u', self.filename],
-                    timeout=max_time,
-                    cwd=self.cwd,
-                    quiet=True,
-                    buffer_output=True,
-                    nested=True,
-                    setenv={'GEVENT_DEBUG': 'error'}):
+        if not util.run([sys.executable, '-u', self.filename],
+                        timeout=max_time,
+                        cwd=self.cwd,
+                        quiet=True,
+                        buffer_output=True,
+                        nested=True,
+                        setenv={'GEVENT_DEBUG': 'error'}):
             self.fail("Failed example: " + self.filename)
         else:
             took = time.time() - start

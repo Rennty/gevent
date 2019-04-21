@@ -2,19 +2,23 @@ from __future__ import print_function, absolute_import, division
 import re
 import sys
 import os
-from . import six
 import traceback
 import unittest
 import threading
 import subprocess
 import time
 
+from . import six
+from gevent._config import validate_bool
+
 # pylint: disable=broad-except,attribute-defined-outside-init
 
 runtimelog = []
 MIN_RUNTIME = 1.0
 BUFFER_OUTPUT = False
-QUIET = False
+# This is set by the testrunner, defaulting to true (be quiet)
+# But if we're run standalone, default to false
+QUIET = validate_bool(os.environ.get('GEVENTTEST_QUIET', '0'))
 
 
 class Popen(subprocess.Popen):
@@ -33,23 +37,26 @@ class Popen(subprocess.Popen):
 _colorscheme = {
     'normal': 'normal',
     'default': 'default',
-    'info': 'normal',
-    'suboptimal-behaviour': 'magenta',
-    'error': 'brightred',
-    'number': 'green',
-    'slow-test': 'brightmagenta',
-    'ok-number': 'green',
-    'error-number': 'brightred',
-    'filename': 'lightblue',
-    'lineno': 'lightred',
-    'testname': 'lightcyan',
-    'failed-example': 'cyan',
-    'expected-output': 'green',
+
     'actual-output': 'red',
     'character-diffs': 'magenta',
+    'debug': 'cyan',
     'diff-chunk': 'magenta',
+    'error': 'brightred',
+    'error-number': 'brightred',
     'exception': 'red',
+    'expected-output': 'green',
+    'failed-example': 'cyan',
+    'filename': 'lightblue',
+    'info': 'normal',
+    'lineno': 'lightred',
+    'number': 'green',
+    'ok-number': 'green',
     'skipped': 'brightyellow',
+    'slow-test': 'brightmagenta',
+    'suboptimal-behaviour': 'magenta',
+    'testname': 'lightcyan',
+    'warning': 'cyan',
 }
 
 _prefixes = [
@@ -89,6 +96,11 @@ def _colorize(what, message, normal='normal'):
     return _color(what) + message + _color(normal)
 
 def log(message, *args, **kwargs):
+    """
+    Log a *message*
+
+    :keyword str color: One of the values from _colorscheme
+    """
     color = kwargs.pop('color', 'normal')
     try:
         if args:
@@ -110,6 +122,13 @@ def log(message, *args, **kwargs):
         string = _colorize(color, string)
         sys.stderr.write(string + '\n')
 
+def debug(message, *args, **kwargs):
+    """
+    Log the *message* only if we're not in quiet mode.
+    """
+    if not QUIET:
+        kwargs.setdefault('color', 'debug')
+        log(message, *args, **kwargs)
 
 def killpg(pid):
     if not hasattr(os, 'killpg'):
@@ -169,6 +188,18 @@ def kill(popen):
     except Exception:
         traceback.print_exc()
 
+# A set of environment keys we ignore for printing purposes
+IGNORED_GEVENT_ENV_KEYS = {
+    'GEVENTTEST_QUIET',
+    'GEVENT_DEBUG',
+}
+
+# A set of (name, value) pairs we ignore for printing purposes.
+# These should match the defaults.
+IGNORED_GEVENT_ENV_ITEMS = {
+    ('GEVENT_RESOLVER', 'thread'),
+    ('GEVENT_RESOLVER_NAMESERVERS', '8.8.8.8')
+}
 
 def getname(command, env=None, setenv=None):
     result = []
@@ -177,8 +208,13 @@ def getname(command, env=None, setenv=None):
     env.update(setenv or {})
 
     for key, value in sorted(env.items()):
-        if key.startswith('GEVENT'):
-            result.append('%s=%s' % (key, value))
+        if not key.startswith('GEVENT'):
+            continue
+        if key in IGNORED_GEVENT_ENV_KEYS:
+            continue
+        if (key, value) in IGNORED_GEVENT_ENV_ITEMS:
+            continue
+        result.append('%s=%s' % (key, value))
 
     if isinstance(command, six.string_types):
         result.append(command)
@@ -221,10 +257,24 @@ def start(command, quiet=False, **kwargs):
 
 
 class RunResult(object):
+    """
+    The results of running an external command.
 
-    def __init__(self, code,
+    If the command was successful, this has a boolean
+    value of True; otherwise, a boolean value of false.
+
+    The integer value of this object is the command's exit code.
+
+    """
+
+    def __init__(self,
+                 command,
+                 run_kwargs,
+                 code,
                  output=None, name=None,
                  run_count=0, skipped_count=0):
+        self.command = command
+        self.run_kwargs = run_kwargs
         self.code = code
         self.output = output
         self.name = name
@@ -233,7 +283,7 @@ class RunResult(object):
 
 
     def __bool__(self):
-        return bool(self.code)
+        return not bool(self.code)
 
     __nonzero__ = __bool__
 
@@ -286,6 +336,7 @@ def _find_test_status(took, out):
 
 
 def run(command, **kwargs): # pylint:disable=too-many-locals
+    "Execute *command*, returning a `RunResult`"
     buffer_output = kwargs.pop('buffer_output', BUFFER_OUTPUT)
     quiet = kwargs.pop('quiet', QUIET)
     verbose = not quiet
@@ -325,7 +376,8 @@ def run(command, **kwargs): # pylint:disable=too-many-locals
             log('- %s %s', name, status)
     if took >= MIN_RUNTIME:
         runtimelog.append((-took, name))
-    return RunResult(result, out, name, run_count, skipped_count)
+    return RunResult(command, kwargs, result,
+                     output=out, name=name, run_count=run_count, skipped_count=skipped_count)
 
 
 class NoSetupPyFound(Exception):

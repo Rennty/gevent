@@ -6,19 +6,24 @@ from gevent import monkey
 
 import os
 import re
-import gevent.testing as greentest
+
 import unittest
 import socket
 from time import time
 import traceback
+
 import gevent.socket as gevent_socket
-from gevent.testing.util import log
+import gevent.testing as greentest
+#from gevent.testing.util import log
+#from gevent.testing.util import debug
+from gevent.testing import util
 from gevent.testing import six
 from gevent.testing.six import xrange
+from gevent.testing import flaky
 
 
 resolver = gevent.get_hub().resolver
-log('Resolver: %s', resolver)
+util.debug('Resolver: %s', resolver)
 
 if getattr(resolver, 'pool', None) is not None:
     resolver.pool.size = 1
@@ -32,8 +37,11 @@ import gevent.testing.timing
 assert gevent_socket.gaierror is socket.gaierror
 assert gevent_socket.error is socket.error
 
-DEBUG = os.getenv('GEVENT_DEBUG', '') == 'trace'
+TRACE = not util.QUIET and os.getenv('GEVENT_DEBUG', '') == 'trace'
 
+def trace(message, *args, **kwargs):
+    if TRACE:
+        util.debug(message, *args, **kwargs)
 
 def _run(function, *args):
     try:
@@ -41,7 +49,7 @@ def _run(function, *args):
         assert not isinstance(result, BaseException), repr(result)
         return result
     except Exception as ex:
-        if DEBUG:
+        if TRACE:
             traceback.print_exc()
         return ex
 
@@ -58,7 +66,9 @@ def format_call(function, args):
         return function + args
 
 
-def log_fresult(result, seconds):
+def trace_fresult(result, seconds):
+    if not TRACE:
+        return
     if isinstance(result, Exception):
         msg = '  -=>  raised %r' % (result, )
     else:
@@ -69,23 +79,21 @@ def log_fresult(result, seconds):
         space = ' ' * space
     else:
         space = ''
-    log(msg + space + time_ms)
+    util.debug(msg + space + time_ms)
 
 
 def run(function, *args):
-    if DEBUG:
-        log(format_call(function, args))
+    trace(format_call(function, args))
     delta = time()
     result = _run(function, *args)
     delta = time() - delta
-    if DEBUG:
-        log_fresult(result, delta)
+    trace_fresult(result, delta)
     return result, delta
 
 
-def log_call(result, runtime, function, *args):
-    log(format_call(function, args))
-    log_fresult(result, runtime)
+def trace_call(result, runtime, function, *args):
+    util.debug(format_call(function, args))
+    trace_fresult(result, runtime)
 
 
 def compare_relaxed(a, b):
@@ -222,7 +230,22 @@ class TestCase(greentest.TestCase):
 
     __timeout__ = 30
     switch_expected = None
-    verbose_dns = False
+    verbose_dns = TRACE
+
+    def setUp(self):
+        super(TestCase, self).setUp()
+        if not self.verbose_dns:
+            # Silence the default reporting of errors from the ThreadPool,
+            # we handle those here.
+            gevent.get_hub().exception_stream = None
+
+    def tearDown(self):
+        if not self.verbose_dns:
+            try:
+                del gevent.get_hub().exception_stream
+            except AttributeError:
+                pass # Happens under leak tests
+        super(TestCase, self).tearDown()
 
     def should_log_results(self, result1, result2):
         if not self.verbose_dns:
@@ -237,10 +260,10 @@ class TestCase(greentest.TestCase):
         real_func = monkey.get_original('socket', func)
         real_result, time_real = run(real_func, *args)
         gevent_result, time_gevent = run(gevent_func, *args)
-        if not DEBUG and self.should_log_results(real_result, gevent_result):
-            log('')
-            log_call(real_result, time_real, real_func, *args)
-            log_call(gevent_result, time_gevent, gevent_func, *args)
+        if util.QUIET and self.should_log_results(real_result, gevent_result):
+            util.log('')
+            trace_call(real_result, time_real, real_func, *args)
+            trace_call(gevent_result, time_gevent, gevent_func, *args)
         self.assertEqualResults(real_result, gevent_result, func)
 
         if self.verbose_dns and time_gevent > time_real + 0.01 and time_gevent > 0.02:
@@ -251,7 +274,7 @@ class TestCase(greentest.TestCase):
             else:
                 word = 'quite'
 
-            log('\nWARNING: %s slow: %s', word, msg)
+            util.log('\nWARNING: %s slow: %s', word, msg, color='warning')
 
         return gevent_result
 
@@ -316,7 +339,9 @@ class TestCase(greentest.TestCase):
         errors = (socket.gaierror, socket.herror, TypeError)
         if isinstance(real_result, errors) and isinstance(gevent_result, errors):
             if type(real_result) is not type(gevent_result):
-                log('WARNING: error type mismatch: %r (gevent) != %r (stdlib)', gevent_result, real_result)
+                util.log('WARNING: error type mismatch: %r (gevent) != %r (stdlib)',
+                         gevent_result, real_result,
+                         color='warning')
             return
 
         real_result = self._normalize_result(real_result, func)
@@ -355,7 +380,12 @@ add(TestTypeError, 25)
 class TestHostname(TestCase):
     pass
 
-add(TestHostname, socket.gethostname)
+add(
+    TestHostname,
+    socket.gethostname,
+    skip=greentest.RUNNING_ON_TRAVIS and greentest.RESOLVER_DNSPYTHON,
+    skip_reason="Sometimes get a different result for getaddrinfo",
+)
 
 
 class TestLocalhost(TestCase):
@@ -470,7 +500,7 @@ class TestEtcHosts(TestCase):
         hf = SanitizedHostsFile(os.path.join(os.path.dirname(__file__),
                                              'hosts_file.txt'))
         all_etc_hosts = sorted(hf.iter_all_host_addr_pairs())
-        if len(all_etc_hosts) > cls.MAX_HOSTS and not DEBUG:
+        if len(all_etc_hosts) > cls.MAX_HOSTS and util.QUIET:
             all_etc_hosts = all_etc_hosts[:cls.MAX_HOSTS]
 
         for host, ip in all_etc_hosts:
@@ -697,20 +727,34 @@ class Test_getnameinfo_fail(TestCase):
 
 class TestInvalidPort(TestCase):
 
-    def test1(self):
+    @flaky.reraises_flaky_race_condition()
+    def test_overflow_neg_one(self):
+        # An Appveyor beginning 2019-03-21, the system resolver
+        # sometimes returns ('23.100.69.251', '65535') instead of
+        # raising an error. That IP address belongs to
+        # readthedocs[.io?] which is where www.gevent.org is a CNAME
+        # to...but it doesn't actually *reverse* to readthedocs.io.
+        # Can't reproduce locally, not sure what's happening
         self._test('getnameinfo', ('www.gevent.org', -1), 0)
 
-    def test2(self):
+    # Beginning with PyPy 2.7 7.1 on Appveyor, we sometimes see this
+    # return an OverflowError instead of the TypeError about None
+    @greentest.skipOnLibuvOnPyPyOnWin("Errors dont match")
+    def test_typeerror_none(self):
         self._test('getnameinfo', ('www.gevent.org', None), 0)
 
-    def test3(self):
+    # Beginning with PyPy 2.7 7.1 on Appveyor, we sometimes see this
+    # return an TypeError instead of the OverflowError.
+    # XXX: But see Test_getnameinfo_fail.test_port_string where this does work.
+    @greentest.skipOnLibuvOnPyPyOnWin("Errors don't match")
+    def test_typeerror_str(self):
         self._test('getnameinfo', ('www.gevent.org', 'x'), 0)
 
     @unittest.skipIf(RESOLVER_DNSPYTHON,
                      "System resolvers do funny things with this: macOS raises gaierror, "
                      "Travis CI returns (readthedocs.org, '0'). It's hard to match that exactly. "
                      "dnspython raises OverflowError.")
-    def test4(self):
+    def test_overflow_port_too_large(self):
         self._test('getnameinfo', ('www.gevent.org', 65536), 0)
 
 

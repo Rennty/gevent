@@ -33,6 +33,8 @@ OSX = gsysinfo.OSX
 
 PURE_PYTHON = gsysinfo.PURE_PYTHON
 
+get_this_psutil_process = gsysinfo.get_this_psutil_process
+
 # XXX: Formalize this better
 LIBUV = 'libuv' in gevent.core.loop.__module__ # pylint:disable=no-member
 CFFI_BACKEND = PYPY or LIBUV or 'cffi' in os.getenv('GEVENT_LOOP', '')
@@ -55,7 +57,6 @@ if WIN:
 
 PY2 = None
 PY3 = None
-PY34 = None
 PY35 = None
 PY36 = None
 PY37 = None
@@ -66,8 +67,6 @@ if sys.version_info[0] == 3:
     NON_APPLICABLE_SUFFIXES += ('2', '279')
     PY2 = False
     PY3 = True
-    if sys.version_info[1] >= 4:
-        PY34 = True
     if sys.version_info[1] >= 5:
         PY35 = True
     if sys.version_info[1] >= 6:
